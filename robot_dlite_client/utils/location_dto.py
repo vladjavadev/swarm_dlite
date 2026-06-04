@@ -8,6 +8,7 @@ class LocationDTO:
         self.totalDistance = 0
         self.pred_time = 0
         self.pred_distance = 0
+        self.collision_points = []
         self._timestamp = None
 
     def _resolve_drone_id(self, drone_id=None):
@@ -36,8 +37,9 @@ class LocationDTO:
         self.totalDistance = distance
         self.pred_time = pred_time
         self.pred_distance = pred_distance
+        self.collision_points = []
 
-    def update_all(self, drones):
+    def update_all(self, drones, collision_points=None):
         self.drones = {}
         for index, drone in enumerate(drones):
             drone_id = drone.get("drone_id") or f"drone_{index}"
@@ -49,6 +51,7 @@ class LocationDTO:
                 "pred_time": drone.get("pred_time", 0),
                 "pred_distance": drone.get("pred_distance", 0),
             }
+        self.collision_points = collision_points or []
         if self.drones:
             self._latest_drone_id = next(iter(self.drones))
             first = self.drones[self._latest_drone_id]
@@ -97,4 +100,7 @@ class LocationDTO:
         if drone_id and drone_id in self.drones:
             return self.drones[drone_id]["totalDistance"]
         return self.totalDistance
+
+    def get_collision_points(self):
+        return getattr(self, "collision_points", [])
 

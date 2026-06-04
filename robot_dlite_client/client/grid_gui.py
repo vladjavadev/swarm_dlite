@@ -12,6 +12,7 @@ BLACK = (0, 0, 0)  # BLACK
 UNOCCUPIED = (255, 255, 255)  # WHITE
 GOAL = (0, 255, 0)  # GREEN
 START = (255, 0, 0)  # RED
+COLLISION_POINT = (255, 165, 0)  # ORANGE
 GRAY1 = (145, 145, 102)  # GRAY1
 OBSTACLE = (77, 77, 51)  # GRAY2
 LOCAL_GRID = (0, 0, 80)  # BLUE
@@ -205,6 +206,15 @@ class Animation:
                                                       self.width,
                                                       self.height])
 
+    def display_collision_points(self, points=None):
+        if points is not None:
+            for point in points:
+                pygame.draw.rect(self.screen, COLLISION_POINT,
+                                 [(self.margin + self.width) * point[1] + self.margin,
+                                  (self.margin + self.height) * point[0] + self.margin,
+                                  self.width,
+                                  self.height])
+
     def draw_legend(self):
         legend_items = [
             (10, weight_colors[10], "Очень трудная"),
@@ -212,6 +222,7 @@ class Animation:
             (4, weight_colors[4], "Средняя"),
             (2, weight_colors[2], "Слегка затрудненная"),
             (1, weight_colors[1], "Нормальная"),
+            (0, COLLISION_POINT, "Collision point"),
         ]
         legend_width = 220
         legend_height = 24 + len(legend_items) * 22
@@ -349,6 +360,10 @@ class Animation:
                 self.totalDistance = cw.loc.get_total_distance()
                 self.pred_distance = cw.loc.get_pred_distance()
                 self.pred_time = cw.loc.get_pred_time()
+
+            collision_points = cw.loc.get_collision_points()
+            if collision_points:
+                self.display_collision_points(collision_points)
 
             for drone_id, drone_data in drones.items():
                 color = self.get_drone_color(drone_id)

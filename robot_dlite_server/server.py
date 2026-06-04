@@ -12,7 +12,7 @@ import json
 import threading
 import time
 import functools
-from typing import List
+from typing import Dict, List, Set, Tuple
 
 # change value for 2 mode
 mode = 3
@@ -60,7 +60,8 @@ async def echo(dto:GridDto, websocket:ServerConnection):
                         "path": path,
                         "distance": totalDistance,
                         "pred_time": pred_time,
-                        "pred_distance": pred_distance
+                        "pred_distance": pred_distance,
+                        "collision_points": dto.get_collision_points()
                     }
                 else:
                     drones = []
@@ -74,7 +75,11 @@ async def echo(dto:GridDto, websocket:ServerConnection):
                             "pred_time": dto.get_predict_time_distance(drone_id)[0],
                             "pred_distance": dto.get_predict_time_distance(drone_id)[1]
                         })
-                    event_location = {"type": "location", "drones": drones}
+                    event_location = {
+                        "type": "location",
+                        "drones": drones,
+                        "collision_points": dto.get_collision_points()
+                    }
                 await websocket.send(json.dumps(event_location))
 
             elif event["type"] == "get-status":
@@ -128,6 +133,87 @@ async def echo(dto:GridDto, websocket:ServerConnection):
         print(f"Error in echo handler: {e}")
 
 
+def build_trajectory(path: List[Tuple[int, int]], current_pos: Tuple[int, int] = None) -> List[Tuple[int, int]]:
+    if not path:
+        return [current_pos] if current_pos is not None else []
+    trajectory = list(path)
+    if current_pos is not None and trajectory and trajectory[0] != current_pos:
+        trajectory.insert(0, current_pos)
+    return trajectory
+
+
+def detect_predicted_collision_points(dto: GridDto) -> Set[Tuple[int, int]]:
+    paths = {}
+    for drone_id in dto.drones:
+        path = dto.get_path(drone_id)
+        if path is None:
+            continue
+        paths[drone_id] = build_trajectory(path, dto.get_position(drone_id))
+
+    collisions = set()
+    drone_ids = list(paths.keys())
+    for i in range(len(drone_ids)):
+        for j in range(i + 1, len(drone_ids)):
+            path_a = paths[drone_ids[i]]
+            path_b = paths[drone_ids[j]]
+            if not path_a or not path_b:
+                continue
+            max_steps = max(len(path_a), len(path_b))
+            for t in range(max_steps):
+                pos_a = path_a[t] if t < len(path_a) else path_a[-1]
+                pos_b = path_b[t] if t < len(path_b) else path_b[-1]
+                if pos_a == pos_b:
+                    collisions.add(pos_a)
+                if t > 0:
+                    prev_a = path_a[t - 1] if t - 1 < len(path_a) else path_a[-1]
+                    prev_b = path_b[t - 1] if t - 1 < len(path_b) else path_b[-1]
+                    if pos_a == prev_b and pos_b == prev_a:
+                        collisions.add(pos_a)
+                        collisions.add(pos_b)
+    return collisions
+
+
+def update_predicted_collisions(dto: GridDto) -> Set[Tuple[int, int]]:
+    dto.clear_collision_obstacles()
+    collision_points = detect_predicted_collision_points(dto)
+    for point in collision_points:
+        dto.mark_collision_point(point)
+    return collision_points
+
+
+def build_collision_group_map(dto: GridDto, collision_points: Set[Tuple[int, int]]) -> Dict[Tuple[int, int], List[Tuple[str, int]]]:
+    group_map = {}
+    for drone_id, path in dto.get_all_paths().items():
+        if path is None:
+            continue
+        trajectory = build_trajectory(path, dto.get_position(drone_id))
+        for step, pos in enumerate(trajectory):
+            if pos not in collision_points:
+                continue
+            group_map.setdefault(pos, []).append((drone_id, step))
+
+    for pos in list(group_map.keys()):
+        group_map[pos].sort(key=lambda item: (item[1], item[0]))
+    return group_map
+
+
+def should_yield_for_collision(dto: GridDto, drone_id: str, collision_point: Tuple[int, int]) -> bool:
+    collision_points = detect_predicted_collision_points(dto)
+    group_map = build_collision_group_map(dto, collision_points)
+    group = group_map.get(collision_point)
+    if not group or len(group) < 2:
+        return False
+
+    best_step = group[0][1]
+    best_drone_ids = [did for did, step in group if step == best_step]
+    if len(best_drone_ids) > 1:
+        allowed_drone = max(best_drone_ids)
+    else:
+        allowed_drone = best_drone_ids[0]
+
+    return drone_id != allowed_drone
+
+
 async def get_pos(dto: GridDto, websocket:ServerConnection):
     pos = dto.get_position()
     websocket.send(pos)
@@ -159,21 +245,35 @@ def moving_robot(logic: Logic):
         try:
             time.sleep(0.1)
             path = logic.dto.get_path(logic.drone_id)
-            if path is not None and path != last_path:
-                if len(path) > 1:
-                    if not p_obs.is_updated:
-                        _lock.acquire()
-                        next_pos = path[1]
-                        p_obs.update(next_pos)
-                        ptime, pdistance = logic.predict_time_distance(path)
-                        if last_pred_time != ptime or len(pred_times) == 0:
-                            pred_times.append(ptime)
-                            path_build_time = logic.dto.get_time_build_path()
-                            path_build_time_list.append(path_build_time)
-                        logic.dto.set_predict_time_distance(ptime, pdistance, logic.drone_id)
-                        last_pred_time = pred_times[-1]
-                        last_path = path
-                        _lock.release()
+            if path is not None:
+                update_predicted_collisions(logic.dto)
+                if path != last_path:
+                    if len(path) > 1:
+                        if not p_obs.is_updated:
+                            _lock.acquire()
+                            next_pos = path[1]
+                            if next_pos in logic.dto.get_collision_points() and should_yield_for_collision(logic.dto, logic.drone_id, next_pos):
+                                print(f"[{logic.drone_id}] Yielding at {next_pos} for another drone to pass")
+                                logic.stop()
+                                _lock.release()
+                                continue
+                            p_obs.update(next_pos)
+                            ptime, pdistance = logic.predict_time_distance(path)
+                            if last_pred_time != ptime or len(pred_times) == 0:
+                                pred_times.append(ptime)
+                                path_build_time = logic.dto.get_time_build_path()
+                                path_build_time_list.append(path_build_time)
+                            logic.dto.set_predict_time_distance(ptime, pdistance, logic.drone_id)
+                            last_pred_time = pred_times[-1]
+                            last_path = path
+                            _lock.release()
+                elif len(path) > 1 and path[1] in logic.dto.get_collision_points():
+                    if should_yield_for_collision(logic.dto, logic.drone_id, path[1]):
+                        print(f"[{logic.drone_id}] Yielding at {path[1]} for another drone to pass")
+                        logic.stop()
+                        continue
+                    print(f"[{logic.drone_id}] Passing through collision point {path[1]}")
+                    continue
 
             if logic.dto.get_position(logic.drone_id) == tuple(logic.dto.get_goal(logic.drone_id)):
                 print(f"MOVE ROBOT POS:{logic.dto.get_position(logic.drone_id)}")

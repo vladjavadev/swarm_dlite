@@ -125,8 +125,9 @@ async def fetch_location(location):
                         pred_distance = event_pos["pred_distance"]
                         drone_id = event_pos.get("drone_id", "drone_0")
                         loc.update(pos, path, goal, distance, pred_time, pred_distance, drone_id)
-                    elif "drones" in event_pos and event_pos["drones"]:
-                        loc.update_all(event_pos["drones"])
+                        loc.collision_points = event_pos.get("collision_points", [])
+                    elif "drones" in event_pos:
+                        loc.update_all(event_pos["drones"], collision_points=event_pos.get("collision_points", []))
 
                 print(f"Ответ сервера: {response}")
             except asyncio.TimeoutError:

@@ -87,7 +87,7 @@ def run_algorithm(dto: GridDto, drone_id: str):
                     try:
                         recalc_start = time.time()
 
-                        if new_observation is not None and new_observation.get("type") == "WEIGHT":
+                        if new_observation is not None and new_observation.get("type") in {"WEIGHT", "COLLISION_OBSTACLE"}:
                             rebuild_dstar(start_position=new_position)
                             dstar.sensed_map = slam.slam_map
                         else:

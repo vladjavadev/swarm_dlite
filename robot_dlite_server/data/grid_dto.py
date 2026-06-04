@@ -28,6 +28,8 @@ class GridDto:
         self.world = None
         self.time_build_path = 0.0
         self.map_changed = False
+        self._static_obstacles = set()
+        self._collision_obstacles = set()
 
     def _resolve_drone_id(self, drone_id=None):
         if drone_id is not None:
@@ -124,6 +126,7 @@ class GridDto:
         with self._lock:
             if self.world.is_unoccupied(grid_cell):
                 self.world.set_obstacle(grid_cell)
+                self._static_obstacles.add(grid_cell)
                 self.observation = {"pos": grid_cell, "type": "OBSTACLE"}
                 self.map_changed = True
 
@@ -132,8 +135,39 @@ class GridDto:
             if not self.world.is_unoccupied(grid_cell):
                 print("grid cell: ".format(grid_cell))
                 self.world.remove_obstacle(grid_cell)
+                self._static_obstacles.discard(grid_cell)
+                self._collision_obstacles.discard(grid_cell)
                 self.observation = {"pos": grid_cell, "type": "UNOCCUPIED"}
                 self.map_changed = True
+
+    def mark_collision_point(self, grid_cell: (int, int)):
+        with self._lock:
+            if grid_cell in self._static_obstacles:
+                return
+            if self.world.is_unoccupied(grid_cell):
+                self.world.set_obstacle(grid_cell)
+            self._collision_obstacles.add(grid_cell)
+            self.observation = {"pos": grid_cell, "type": "COLLISION_OBSTACLE"}
+            self.map_changed = True
+
+    def clear_collision_obstacles(self):
+        with self._lock:
+            removed = False
+            for grid_cell in list(self._collision_obstacles):
+                if grid_cell not in self._static_obstacles and not self.world.is_unoccupied(grid_cell):
+                    self.world.remove_obstacle(grid_cell)
+                    removed = True
+                self._collision_obstacles.discard(grid_cell)
+            if removed:
+                self.map_changed = True
+
+    def get_collision_points(self):
+        with self._lock:
+            return list(self._collision_obstacles)
+
+    def get_all_paths(self):
+        with self._lock:
+            return {drone_id: self.get_path(drone_id) for drone_id in self.drones}
 
     def set_weight(self, grid_cell: (int, int), weight: float):
         with self._lock:
